@@ -53,7 +53,7 @@ impl ColumnBatch {
 
     /// Get storage for `T`s, or `None` if `T` wasn't in the [`ColumnBatchType`]
     pub fn storage_for<T: Component>(&mut self) -> Option<&mut [MaybeUninit<T>]> {
-        let base = self.archetype.get::<T>()?;
+        let base = self.archetype.get_base::<T>()?;
         Some(unsafe {
             slice::from_raw_parts_mut(base.as_ptr().cast(), self.archetype.capacity() as usize)
         })

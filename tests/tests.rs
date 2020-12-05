@@ -465,3 +465,20 @@ fn spawn_column_batch() {
         assert_eq!(*world.get::<i32>(entities[1]).unwrap(), 45);
     }
 }
+
+#[test]
+fn columnar_access() {
+    let mut world = World::new();
+    let e = world.spawn(("abc", 123));
+    let f = world.spawn(("def", 456, true));
+    let g = world.spawn(("ghi", 789, false));
+    let mut archetypes = world.archetypes_mut();
+    let _empty = archetypes.next().unwrap();
+    let a = archetypes.next().unwrap();
+    assert_eq!(a.ids(), &[e.id()]);
+    assert_eq!(a.get_mut::<i32>(), Some(&mut [123][..]));
+    assert_eq!(a.get_mut::<bool>(), None);
+    let b = archetypes.next().unwrap();
+    assert_eq!(b.ids(), &[f.id(), g.id()]);
+    assert_eq!(b.get_mut::<i32>(), Some(&mut [456, 789][..]));
+}

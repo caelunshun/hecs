@@ -11,8 +11,8 @@ use crate::alloc::{vec, vec::Vec};
 use core::any::{type_name, TypeId};
 use core::cell::UnsafeCell;
 use core::hash::{BuildHasher, BuildHasherDefault, Hasher};
-use core::mem;
 use core::ptr::{self, NonNull};
+use core::{mem, slice};
 
 use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
 
@@ -89,13 +89,22 @@ impl Archetype {
         self.state.contains_key(&id)
     }
 
-    pub(crate) fn get<T: Component>(&self) -> Option<NonNull<T>> {
+    pub(crate) fn get_base<T: Component>(&self) -> Option<NonNull<T>> {
         let state = self.state.get(&TypeId::of::<T>())?;
         Some(unsafe {
             NonNull::new_unchecked(
                 (*self.data.get()).as_ptr().add(state.offset).cast::<T>() as *mut T
             )
         })
+    }
+
+    /// Get the `T` components of these entities, if present
+    ///
+    /// Useful for efficient serialization. A unique borrow is required to avoid concurrent mutation
+    /// from queries.
+    pub fn get_mut<T: Component>(&mut self) -> Option<&mut [T]> {
+        let ptr = self.get_base::<T>()?;
+        Some(unsafe { slice::from_raw_parts_mut(ptr.as_ptr(), self.len as usize) })
     }
 
     pub(crate) fn borrow<T: Component>(&self) {
@@ -359,6 +368,16 @@ impl Archetype {
         }
         self.len += other.len;
         other.len = 0;
+    }
+
+    /// Raw IDs of the entities in this archetype
+    ///
+    /// Convertible into [`Entity`](crate::Entity)s with
+    /// [`World::find_entity_from_id()`](crate::World::find_entity_from_id). Useful for efficient
+    /// serialization.
+    #[inline]
+    pub fn ids(&self) -> &[u32] {
+        &self.entities[0..self.len as usize]
     }
 }
 
