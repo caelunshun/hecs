@@ -19,8 +19,8 @@ use crate::alloc::boxed::Box;
 use crate::archetype::Archetype;
 use crate::entities::{Entities, Location, ReserveEntitiesIterator};
 use crate::{
-    Bundle, DynamicBundle, Entity, EntityRef, Fetch, MissingComponent, NoSuchEntity, Query,
-    QueryBorrow, QueryItem, QueryMut, QueryOne, Ref, RefMut,
+    Bundle, ColumnBatch, DynamicBundle, Entity, EntityRef, Fetch, MissingComponent, NoSuchEntity,
+    Query, QueryBorrow, QueryItem, QueryMut, QueryOne, Ref, RefMut,
 };
 
 /// An unordered collection of entities, each having any number of distinctly typed components
@@ -189,6 +189,61 @@ impl World {
             entities: &mut self.entities,
             archetype_id,
             archetype: &mut self.archetypes[archetype_id as usize],
+        }
+    }
+
+    /// Super-efficiently spawn the contents of a [`ColumnBatch`]
+    ///
+    /// The fastest, but most specialized, way to spawn large numbers of entities. Useful for high
+    /// performance deserialization.
+    pub fn spawn_column_batch(&mut self, batch: ColumnBatch) -> SpawnColumnBatchIter<'_> {
+        self.flush();
+
+        let ids = batch
+            .archetype
+            .types()
+            .iter()
+            .map(|info| info.id())
+            .collect::<Box<_>>();
+        use hashbrown::hash_map::Entry;
+
+        let n = batch.archetype.len();
+        // Store component data
+        let (archetype_id, base) = match self.index.entry(ids) {
+            Entry::Occupied(x) => {
+                // Duplicate of existing archetype
+                let archetype = &mut self.archetypes[*x.get() as usize];
+                let base = archetype.len();
+                unsafe {
+                    archetype.merge(batch.archetype);
+                }
+                (*x.get(), base)
+            }
+            Entry::Vacant(x) => {
+                // Brand new archetype
+                let id = self.archetypes.len() as u32;
+                self.archetypes.push(batch.archetype);
+                x.insert(id);
+                (id, 0)
+            }
+        };
+
+        let archetype = &mut self.archetypes[archetype_id as usize];
+        let id_alloc = self.entities.alloc_many(n, archetype_id, base);
+
+        // Fill in entity IDs
+        let mut id_alloc_clone = id_alloc.clone();
+        let mut index = base as usize;
+        while let Some(id) = id_alloc_clone.next(&self.entities) {
+            archetype.set_entity_id(index, id);
+            index += 1;
+        }
+
+        // Return iterator over new IDs
+        SpawnColumnBatchIter {
+            pending_end: id_alloc.pending_end,
+            id_alloc,
+            entities: &mut self.entities,
         }
     }
 
@@ -901,6 +956,39 @@ where
 {
     fn len(&self) -> usize {
         self.inner.len()
+    }
+}
+
+/// Iterator over [`Entity`]s spawned by [`World::spawn_column_batch()`]
+pub struct SpawnColumnBatchIter<'a> {
+    pending_end: usize,
+    id_alloc: crate::entities::AllocManyState,
+    entities: &'a mut Entities,
+}
+
+impl Iterator for SpawnColumnBatchIter<'_> {
+    type Item = Entity;
+
+    fn next(&mut self) -> Option<Entity> {
+        let id = self.id_alloc.next(&self.entities)?;
+        Some(unsafe { self.entities.resolve_unknown_gen(id) })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len(), Some(self.len()))
+    }
+}
+
+impl ExactSizeIterator for SpawnColumnBatchIter<'_> {
+    fn len(&self) -> usize {
+        self.id_alloc.len(&self.entities)
+    }
+}
+
+impl Drop for SpawnColumnBatchIter<'_> {
+    fn drop(&mut self) {
+        // Consume used freelist entries
+        self.entities.finish_alloc_many(self.pending_end);
     }
 }
 

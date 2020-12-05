@@ -410,3 +410,58 @@ fn duplicate_components_panic() {
     let mut world = World::new();
     world.reserve::<(f32, i64, f32)>(1);
 }
+
+#[test]
+fn spawn_column_batch() {
+    let mut world = World::new();
+    let mut batch_ty = ColumnBatchType::new();
+    batch_ty.add::<i32>().add::<bool>();
+
+    // Unique archetype
+    let b;
+    {
+        let mut batch = batch_ty.clone().into_batch();
+        batch.reserve(2);
+        unsafe {
+            let bs = batch.storage_for::<bool>().unwrap();
+            bs[0].as_mut_ptr().write(true);
+            bs[1].as_mut_ptr().write(false);
+            let is = batch.storage_for::<i32>().unwrap();
+            is[0].as_mut_ptr().write(42);
+            is[1].as_mut_ptr().write(43);
+            batch.set_len(2);
+        }
+        let entities = world.spawn_column_batch(batch).collect::<Vec<_>>();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(
+            world.query_one_mut::<(&i32, &bool)>(entities[0]).unwrap(),
+            (&42, &true)
+        );
+        assert_eq!(
+            world.query_one_mut::<(&i32, &bool)>(entities[1]).unwrap(),
+            (&43, &false)
+        );
+        world.despawn(entities[0]).unwrap();
+        b = entities[1];
+    }
+
+    // Duplicate archetype
+    {
+        let mut batch = batch_ty.clone().into_batch();
+        batch.reserve(2);
+        unsafe {
+            let bs = batch.storage_for::<bool>().unwrap();
+            bs[0].as_mut_ptr().write(true);
+            bs[1].as_mut_ptr().write(false);
+            let is = batch.storage_for::<i32>().unwrap();
+            is[0].as_mut_ptr().write(44);
+            is[1].as_mut_ptr().write(45);
+            batch.set_len(2);
+        }
+        let entities = world.spawn_column_batch(batch).collect::<Vec<_>>();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(*world.get::<i32>(b).unwrap(), 43);
+        assert_eq!(*world.get::<i32>(entities[0]).unwrap(), 44);
+        assert_eq!(*world.get::<i32>(entities[1]).unwrap(), 45);
+    }
+}
